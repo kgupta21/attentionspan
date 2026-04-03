@@ -1,6 +1,8 @@
+import json
 import os
 import tempfile
 import unittest
+from pathlib import Path
 
 import attentionspan
 
@@ -36,14 +38,25 @@ class AttentionSpanTests(unittest.TestCase):
     def setUp(self) -> None:
         self.tempdir = tempfile.TemporaryDirectory()
         self.original_home = os.environ.get("ATTENTIONSPAN_HOME")
+        self.original_claude_dir = os.environ.get("ATTENTIONSPAN_CLAUDE_DIR")
         os.environ["ATTENTIONSPAN_HOME"] = self.tempdir.name
+        os.environ["ATTENTIONSPAN_CLAUDE_DIR"] = str(Path(self.tempdir.name) / ".claude")
 
     def tearDown(self) -> None:
         if self.original_home is None:
             os.environ.pop("ATTENTIONSPAN_HOME", None)
         else:
             os.environ["ATTENTIONSPAN_HOME"] = self.original_home
+        if self.original_claude_dir is None:
+            os.environ.pop("ATTENTIONSPAN_CLAUDE_DIR", None)
+        else:
+            os.environ["ATTENTIONSPAN_CLAUDE_DIR"] = self.original_claude_dir
         self.tempdir.cleanup()
+
+    def write_settings(self, payload) -> None:
+        path = attentionspan.settings_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(payload), encoding="utf-8")
 
     def test_mode_thresholds(self) -> None:
         self.assertEqual(attentionspan.mode_for_percentage(30).name, "normal")
@@ -94,6 +107,73 @@ class AttentionSpanTests(unittest.TestCase):
 
         response = attentionspan.build_hook_response({"session_id": "abc123"})
         self.assertIsNone(response)
+
+    def test_enable_installation_writes_settings_and_commands(self) -> None:
+        existing_settings = {
+            "statusLine": {"type": "command", "command": "echo old"},
+            "hooks": {
+                "UserPromptSubmit": [
+                    {
+                        "matcher": "*",
+                        "hooks": [{"type": "command", "command": "echo keep"}],
+                    }
+                ]
+            },
+        }
+        self.write_settings(existing_settings)
+
+        snapshot = attentionspan.enable_installation()
+        settings = attentionspan.load_settings()
+        metadata = attentionspan.load_install_metadata()
+
+        self.assertEqual(snapshot.state, "enabled")
+        self.assertTrue(attentionspan.is_managed_statusline(settings["statusLine"]))
+        self.assertTrue(attentionspan.has_managed_hook(settings))
+        self.assertEqual(metadata["previous_statusline"], existing_settings["statusLine"])
+        self.assertTrue(metadata["previous_statusline_present"])
+        self.assertEqual(
+            sorted(path.name for path in attentionspan.commands_dir().glob("*.md")),
+            ["attentionspan-off.md", "attentionspan-on.md", "attentionspan-status.md"],
+        )
+
+    def test_disable_installation_restores_previous_statusline(self) -> None:
+        existing_settings = {
+            "statusLine": {"type": "command", "command": "echo old"},
+            "hooks": {
+                "UserPromptSubmit": [
+                    {
+                        "matcher": "*",
+                        "hooks": [{"type": "command", "command": "echo keep"}],
+                    }
+                ]
+            },
+        }
+        self.write_settings(existing_settings)
+        attentionspan.enable_installation()
+
+        snapshot = attentionspan.disable_installation()
+        settings = attentionspan.load_settings()
+
+        self.assertEqual(snapshot.state, "disabled")
+        self.assertEqual(settings["statusLine"], existing_settings["statusLine"])
+        self.assertFalse(attentionspan.has_managed_hook(settings))
+        self.assertEqual(
+            settings["hooks"]["UserPromptSubmit"][0]["hooks"][0]["command"], "echo keep"
+        )
+        self.assertEqual(
+            sorted(path.name for path in attentionspan.commands_dir().glob("*.md")),
+            ["attentionspan-off.md", "attentionspan-on.md", "attentionspan-status.md"],
+        )
+
+    def test_command_file_uses_exact_disable_command(self) -> None:
+        attentionspan.install_user_commands()
+        content = (attentionspan.commands_dir() / "attentionspan-off.md").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("!`", content)
+        self.assertIn("install disable", content)
+        self.assertIn("allowed-tools:", content)
 
 
 if __name__ == "__main__":

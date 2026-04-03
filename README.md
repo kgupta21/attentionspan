@@ -32,13 +32,54 @@ export ATTENTIONSPAN_THRESHOLDS="55,75,90"
 
 ## Install
 
-Clone the repo somewhere stable, then make the script executable:
+Clone the repo somewhere stable, then run the installer:
 
 ```bash
-chmod +x /absolute/path/to/attentionspan/attentionspan.py
+./install.sh
 ```
 
-Point Claude Code at the script from `~/.claude/settings.json`:
+You can also call the Python entrypoint directly:
+
+```bash
+python3 attentionspan.py install
+```
+
+The installer automatically:
+
+- writes the AttentionSpan `statusLine` entry into `~/.claude/settings.json`
+- adds the `UserPromptSubmit` hook that injects stricter instructions as context fills
+- installs personal Claude Code slash commands in `~/.claude/commands/`
+
+After installation, these slash commands are available inside Claude Code:
+
+- `/attentionspan-off`
+- `/attentionspan-on`
+- `/attentionspan-status`
+
+Disabling AttentionSpan removes its hook and status line while keeping the slash commands installed, so you can turn it back on from Claude Code later.
+
+Claude Code writes the latest session snapshots to `~/.claude/attentionspan/state/` by default. To move that elsewhere, set:
+
+```bash
+export ATTENTIONSPAN_HOME="/some/other/path"
+```
+
+## How it works
+
+`UserPromptSubmit` hooks do not receive `context_window.used_percentage`, so the hook cannot know current context pressure on its own.
+
+This repo works around that by using the status line as the state producer:
+
+1. Claude Code runs the `statusline` command after assistant responses.
+2. `attentionspan.py statusline` stores the latest `used_percentage`, token counts, and mode for that `session_id`.
+3. On the next user prompt, Claude Code runs `attentionspan.py hook`.
+4. The hook reloads the saved state for that `session_id` and emits `additionalContext` only when the session has crossed a threshold.
+
+This keeps everything local, cheap, and easy to tune.
+
+## Manual wiring
+
+If you do not want to use the installer, this is the settings shape it writes to `~/.claude/settings.json`:
 
 ```json
 {
@@ -63,31 +104,26 @@ Point Claude Code at the script from `~/.claude/settings.json`:
 }
 ```
 
-Claude Code writes the latest session snapshots to `~/.claude/attentionspan/state/` by default. To move that elsewhere, set:
-
-```bash
-export ATTENTIONSPAN_HOME="/some/other/path"
-```
-
-## How it works
-
-`UserPromptSubmit` hooks do not receive `context_window.used_percentage`, so the hook cannot know current context pressure on its own.
-
-This repo works around that by using the status line as the state producer:
-
-1. Claude Code runs the `statusline` command after assistant responses.
-2. `attentionspan.py statusline` stores the latest `used_percentage`, token counts, and mode for that `session_id`.
-3. On the next user prompt, Claude Code runs `attentionspan.py hook`.
-4. The hook reloads the saved state for that `session_id` and emits `additionalContext` only when the session has crossed a threshold.
-
-This keeps everything local, cheap, and easy to tune.
-
 ## Verify locally
 
 Run the test suite:
 
 ```bash
 python3 -m unittest discover -s tests
+```
+
+Smoke-test the installer without touching your real `~/.claude` directory:
+
+```bash
+ATTENTIONSPAN_CLAUDE_DIR="$(pwd)/.claude-test" ATTENTIONSPAN_HOME="$(pwd)/.attentionspan-test" ./install.sh
+```
+
+```bash
+ATTENTIONSPAN_CLAUDE_DIR="$(pwd)/.claude-test" ATTENTIONSPAN_HOME="$(pwd)/.attentionspan-test" python3 attentionspan.py install status
+```
+
+```bash
+ATTENTIONSPAN_CLAUDE_DIR="$(pwd)/.claude-test" ATTENTIONSPAN_HOME="$(pwd)/.attentionspan-test" python3 attentionspan.py install disable
 ```
 
 You can also smoke-test each entrypoint by piping JSON into it:
